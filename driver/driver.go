@@ -1,12 +1,15 @@
 package driver
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/docker/machine/libmachine/drivers"
 	"github.com/docker/machine/libmachine/log"
 	"github.com/docker/machine/libmachine/mcnflag"
 	"github.com/docker/machine/libmachine/state"
+	waldurclient "github.com/waldur/go-client"
+	"net/http"
 )
 
 const (
@@ -16,8 +19,14 @@ const (
 type Driver struct {
 	*drivers.BaseDriver
 
-	ApiUrl       string
-	ApiToken       string
+	ApiUrl           string
+	ApiToken         string
+	ProjectUuid      string
+	OfferingUuid     string
+	FlavorUuid       string
+	ImageUuid        string
+	SystemVolumeSize int
+	Subnets          []string
 }
 
 // NewDriver creates and returns a new instance of Waldur driver
@@ -66,15 +75,78 @@ func (d *Driver) SetConfigFromFlags(flags drivers.DriverOptions) error {
 		return fmt.Errorf("Waldur requires the --waldur-api-token option")
 	}
 
+	d.Subnets = flags.StringSlice("waldur-subnets")
+
 	return nil
 }
 
 // Create creates a host in Waldur using the driver's config
 func (d *Driver) Create() error {
-	// Implement your provider's logic to create a node
 	log.Infof("Creating instance for %s...", d.MachineName)
 
-	// TODO
+	projectUri := fmt.Sprintf("%s/projects/%s/", d.ApiUrl, d.ProjectUuid)
+	offeringUri := fmt.Sprintf("%s/marketplace-offerings/%s/", d.ApiUrl, d.OfferingUuid)
+	flavourUri := fmt.Sprintf("%s/openstack-flavors/%s/", d.ApiUrl, d.OfferingUuid)
+	imageUri := fmt.Sprintf("%s/openstack-images/%s/", d.ApiUrl, d.ImageUuid)
+	subnets := make([]map[string]string, len(d.Subnets))
+	for _, subnet := range d.Subnets {
+		subnetUri := fmt.Sprintf("%s/openstack-subnets/%s/", d.ApiUrl, subnet)
+		subnets = append(subnets, map[string]string{
+			"subnet": subnetUri,
+		})
+	}
+	var attributes interface{} = map[string]interface{}{
+		"name":               d.GetMachineName(),
+		"flavor":             flavourUri,
+		"image":              imageUri,
+		"system_volume_size": d.SystemVolumeSize * 1024,
+		"ports":              subnets,
+		// TODO: add floating_ips
+		// "floating_ips": floating_ips,
+	}
+
+	acceptingTermsOfService := true
+
+	limits := map[string]int{}
+
+	hc := http.Client{}
+	auth, err := waldurclient.NewTokenAuth(d.ApiToken)
+	if err != nil {
+		log.Errorf("Error while creating token auth %s", err)
+		return err
+	}
+
+	client, err := waldurclient.NewClientWithResponses(d.ApiUrl, waldurclient.WithHTTPClient(&hc), waldurclient.WithRequestEditorFn(auth.Intercept))
+	if err != nil {
+		log.Errorf("Error creating Waldur client %s", err)
+		return err
+	}
+	requestType := waldurclient.RequestTypesCreate
+
+	payload := waldurclient.MarketplaceOrdersCreateJSONRequestBody{
+		AcceptingTermsOfService: &acceptingTermsOfService,
+		Attributes:              &attributes,
+		Limits:                  &limits,
+		Offering:                offeringUri,
+		Project:                 projectUri,
+		Type:                    &requestType,
+		// TODO: add plan URI
+		// Plan: planUri,
+	}
+
+	ctx := context.Background()
+	resp, err := client.MarketplaceOrdersCreateWithResponse(ctx, payload)
+
+	if err != nil {
+		log.Errorf("Error calling API: %v", err)
+	}
+
+	if resp.StatusCode() != 201 {
+		responseBody := string(resp.Body[:])
+		log.Errorf("Unable to create an instance %s, code %s, details: %s", d.MachineName, resp.StatusCode(), responseBody)
+	}
+
+	log.Infof("Successfully created instance %s", d.MachineName)
 
 	return nil
 }
