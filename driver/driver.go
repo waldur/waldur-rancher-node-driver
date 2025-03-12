@@ -2,14 +2,16 @@ package driver
 
 import (
 	"context"
+	"errors"
 	"fmt"
+
+	"net/http"
 
 	"github.com/docker/machine/libmachine/drivers"
 	"github.com/docker/machine/libmachine/log"
 	"github.com/docker/machine/libmachine/mcnflag"
 	"github.com/docker/machine/libmachine/state"
 	waldurclient "github.com/waldur/go-client"
-	"net/http"
 )
 
 const (
@@ -19,14 +21,18 @@ const (
 type Driver struct {
 	*drivers.BaseDriver
 
-	ApiUrl           string
-	ApiToken         string
-	ProjectUuid      string
-	OfferingUuid     string
-	FlavorUuid       string
-	ImageUuid        string
-	SystemVolumeSize int
-	Subnets          []string
+	ApiUrl               string
+	ApiToken             string
+	ProjectUuid          string
+	OfferingUuid         string
+	PlanUuid             string
+	FlavorUuid           string
+	ImageUuid            string
+	SystemVolumeSize     int
+	SystemVolumeTypeUuid string
+	DataVolumeTypeUuid   string
+	Subnets              []string
+	SecurityGroupUuid    string
 }
 
 // NewDriver creates and returns a new instance of Waldur driver
@@ -84,23 +90,34 @@ func (d *Driver) SetConfigFromFlags(flags drivers.DriverOptions) error {
 func (d *Driver) Create() error {
 	log.Infof("Creating instance for %s...", d.MachineName)
 
-	projectUri := fmt.Sprintf("%s/projects/%s/", d.ApiUrl, d.ProjectUuid)
-	offeringUri := fmt.Sprintf("%s/marketplace-offerings/%s/", d.ApiUrl, d.OfferingUuid)
-	flavourUri := fmt.Sprintf("%s/openstack-flavors/%s/", d.ApiUrl, d.OfferingUuid)
-	imageUri := fmt.Sprintf("%s/openstack-images/%s/", d.ApiUrl, d.ImageUuid)
+	projectUri := fmt.Sprintf("%s/api/projects/%s/", d.ApiUrl, d.ProjectUuid)
+	offeringUri := fmt.Sprintf("%s/api/marketplace-public-offerings/%s/", d.ApiUrl, d.OfferingUuid)
+	flavorUri := fmt.Sprintf("%s/api/openstack-flavors/%s/", d.ApiUrl, d.FlavorUuid)
+	imageUri := fmt.Sprintf("%s/api/openstack-images/%s/", d.ApiUrl, d.ImageUuid)
+	systemVolumeTypeUri := fmt.Sprintf("%s/api/openstack-volume-types/%s/", d.ApiUrl, d.SystemVolumeTypeUuid)
+	dataVolumeTypeUri := fmt.Sprintf("%s/api/openstack-volume-types/%s/", d.ApiUrl, d.DataVolumeTypeUuid)
 	subnets := make([]map[string]string, len(d.Subnets))
-	for _, subnet := range d.Subnets {
-		subnetUri := fmt.Sprintf("%s/openstack-subnets/%s/", d.ApiUrl, subnet)
-		subnets = append(subnets, map[string]string{
+	defaultSecGroupUri := fmt.Sprintf("%s/api/openstack-security-groups/%s/", d.ApiUrl, d.SecurityGroupUuid)
+	securityGroups := make([]map[string]string, 1)
+	securityGroups[0] = map[string]string{
+		"url": defaultSecGroupUri,
+	}
+
+	for i, subnet := range d.Subnets {
+		subnetUri := fmt.Sprintf("%s/api/openstack-subnets/%s/", d.ApiUrl, subnet)
+		subnets[i] = map[string]string{
 			"subnet": subnetUri,
-		})
+		}
 	}
 	var attributes interface{} = map[string]interface{}{
 		"name":               d.GetMachineName(),
-		"flavor":             flavourUri,
+		"flavor":             flavorUri,
 		"image":              imageUri,
 		"system_volume_size": d.SystemVolumeSize * 1024,
+		"system_volume_type": systemVolumeTypeUri,
+		"data_volume_type":   dataVolumeTypeUri,
 		"ports":              subnets,
+		"security_groups":    securityGroups,
 		// TODO: add floating_ips
 		// "floating_ips": floating_ips,
 	}
@@ -130,8 +147,7 @@ func (d *Driver) Create() error {
 		Offering:                offeringUri,
 		Project:                 projectUri,
 		Type:                    &requestType,
-		// TODO: add plan URI
-		// Plan: planUri,
+		// Plan:                    &planUri,
 	}
 
 	ctx := context.Background()
@@ -139,15 +155,17 @@ func (d *Driver) Create() error {
 
 	if err != nil {
 		log.Errorf("Error calling API: %v", err)
+		return err
 	}
 
 	if resp.StatusCode() != 201 {
 		responseBody := string(resp.Body[:])
-		log.Errorf("Unable to create an instance %s, code %s, details: %s", d.MachineName, resp.StatusCode(), responseBody)
+		log.Errorf("Unable to create an instance %s, code %d, details", d.MachineName, resp.StatusCode(), responseBody)
+		msg := fmt.Sprintf("Unable to create an instance %s, code %d", d.MachineName, resp.StatusCode())
+		return errors.New(msg)
 	}
 
 	log.Infof("Successfully created instance %s", d.MachineName)
-
 	return nil
 }
 
