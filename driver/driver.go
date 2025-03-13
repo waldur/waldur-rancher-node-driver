@@ -1,12 +1,17 @@
 package driver
 
 import (
+	"context"
+	"errors"
 	"fmt"
+
+	"net/http"
 
 	"github.com/docker/machine/libmachine/drivers"
 	"github.com/docker/machine/libmachine/log"
 	"github.com/docker/machine/libmachine/mcnflag"
 	"github.com/docker/machine/libmachine/state"
+	waldurclient "github.com/waldur/go-client"
 )
 
 const (
@@ -16,8 +21,17 @@ const (
 type Driver struct {
 	*drivers.BaseDriver
 
-	ApiUrl       string
-	ApiToken       string
+	ApiUrl               string
+	ApiToken             string
+	ProjectUuid          string
+	OfferingUuid         string
+	FlavorUuid           string
+	ImageUuid            string
+	SystemVolumeSize     int
+	SystemVolumeTypeUuid string
+	DataVolumeTypeUuid   string
+	SubnetUuids          []string
+	SecurityGroupUuid    string
 }
 
 // NewDriver creates and returns a new instance of Waldur driver
@@ -49,6 +63,46 @@ func (d *Driver) GetCreateFlags() []mcnflag.Flag {
 			Name:   "waldur-proj-uuid",
 			Usage:  "UUID of the project in Waldur",
 		},
+		mcnflag.StringFlag{
+			EnvVar: "WALDUR_OFFERING_UUID",
+			Name:   "waldur-offering-uuid",
+			Usage:  "UUID of the VM offering in Waldur",
+		},
+		mcnflag.StringFlag{
+			EnvVar: "WALDUR_FLAVOR_UUID",
+			Name:   "waldur-flavor-uuid",
+			Usage:  "UUID of the VM flavor in Waldur",
+		},
+		mcnflag.StringFlag{
+			EnvVar: "WALDUR_IMAGE_UUID",
+			Name:   "waldur-image-uuid",
+			Usage:  "UUID of the VM image in Waldur",
+		},
+		mcnflag.IntFlag{
+			EnvVar: "WALDUR_SYS_VOLUME_SIZE",
+			Name:   "waldur-sys-volume-size",
+			Usage:  "System volume size for Waldur VM (GB)",
+		},
+		mcnflag.StringFlag{
+			EnvVar: "WALDUR_SYS_VOLUME_TYPE_UUID",
+			Name:   "waldur-sys-volume-type-uuid",
+			Usage:  "UUID of the system volume type in Waldur",
+		},
+		mcnflag.StringFlag{
+			EnvVar: "WALDUR_DATA_VOLUME_TYPE_UUID",
+			Name:   "waldur-data-volume-type-uuid",
+			Usage:  "UUID of the data volume type in Waldur",
+		},
+		mcnflag.StringFlag{
+			EnvVar: "WALDUR_SEC_GROUP_UUID",
+			Name:   "waldur-sec-group-uuid",
+			Usage:  "UUID of the security group in Waldur",
+		},
+		mcnflag.StringSliceFlag{
+			EnvVar: "WALDUR_SUBNET_UUIDS",
+			Name:   "waldur-subnet-uuids",
+			Usage:  "List of UUIDs of subnets in Waldur",
+		},
 	}
 }
 
@@ -56,6 +110,15 @@ func (d *Driver) GetCreateFlags() []mcnflag.Flag {
 func (d *Driver) SetConfigFromFlags(flags drivers.DriverOptions) error {
 	d.ApiUrl = flags.String("waldur-api-url")
 	d.ApiToken = flags.String("waldur-api-token")
+	d.ProjectUuid = flags.String("waldur-proj-uuid")
+	d.OfferingUuid = flags.String("waldur-offering-uuid")
+	d.FlavorUuid = flags.String("waldur-flavor-uuid")
+	d.ImageUuid = flags.String("waldur-image-uuid")
+	d.SystemVolumeSize = flags.Int("waldur-sys-volume-size")
+	d.SystemVolumeTypeUuid = flags.String("waldur-sys-volume-type-uuid")
+	d.DataVolumeTypeUuid = flags.String("waldur-data-volume-type-uuid")
+	d.SecurityGroupUuid = flags.String("waldur-sec-group-uuid")
+	d.SubnetUuids = flags.StringSlice("waldur-subnet-uuids")
 
 	// Validation
 	if d.ApiUrl == "" {
@@ -66,16 +129,116 @@ func (d *Driver) SetConfigFromFlags(flags drivers.DriverOptions) error {
 		return fmt.Errorf("Waldur requires the --waldur-api-token option")
 	}
 
+	if d.ProjectUuid == "" {
+		return fmt.Errorf("Waldur requires the --waldur-proj-uuid option")
+	}
+	if d.OfferingUuid == "" {
+		return fmt.Errorf("Waldur requires the --waldur-offering-uuid option")
+	}
+	if d.FlavorUuid == "" {
+		return fmt.Errorf("Waldur requires the --waldur-flavor-uuid option")
+	}
+	if d.ImageUuid == "" {
+		return fmt.Errorf("Waldur requires the --waldur-image-uuid option")
+	}
+	if d.SystemVolumeSize == 0 {
+		return fmt.Errorf("Waldur requires the --waldur-sys-volume-size to be greater than 5 GB")
+	}
+	if d.SystemVolumeTypeUuid == "" {
+		return fmt.Errorf("Waldur requires the --waldur-sys-volume-type-uuid option")
+	}
+	if d.DataVolumeTypeUuid == "" {
+		return fmt.Errorf("Waldur requires the --waldur-data-volume-type-uuid option")
+	}
+	if d.SecurityGroupUuid == "" {
+		return fmt.Errorf("Waldur requires the --waldur-sec-group-uuid option")
+	}
+	if d.SubnetUuids == nil {
+		d.SubnetUuids = []string{}
+	}
+
 	return nil
 }
 
 // Create creates a host in Waldur using the driver's config
 func (d *Driver) Create() error {
-	// Implement your provider's logic to create a node
 	log.Infof("Creating instance for %s...", d.MachineName)
 
-	// TODO
+	projectUri := fmt.Sprintf("%s/api/projects/%s/", d.ApiUrl, d.ProjectUuid)
+	offeringUri := fmt.Sprintf("%s/api/marketplace-public-offerings/%s/", d.ApiUrl, d.OfferingUuid)
+	flavorUri := fmt.Sprintf("%s/api/openstack-flavors/%s/", d.ApiUrl, d.FlavorUuid)
+	imageUri := fmt.Sprintf("%s/api/openstack-images/%s/", d.ApiUrl, d.ImageUuid)
+	systemVolumeTypeUri := fmt.Sprintf("%s/api/openstack-volume-types/%s/", d.ApiUrl, d.SystemVolumeTypeUuid)
+	dataVolumeTypeUri := fmt.Sprintf("%s/api/openstack-volume-types/%s/", d.ApiUrl, d.DataVolumeTypeUuid)
+	subnets := make([]map[string]string, len(d.SubnetUuids))
+	defaultSecGroupUri := fmt.Sprintf("%s/api/openstack-security-groups/%s/", d.ApiUrl, d.SecurityGroupUuid)
+	securityGroups := make([]map[string]string, 1)
+	securityGroups[0] = map[string]string{
+		"url": defaultSecGroupUri,
+	}
 
+	for i, subnet := range d.SubnetUuids {
+		subnetUri := fmt.Sprintf("%s/api/openstack-subnets/%s/", d.ApiUrl, subnet)
+		subnets[i] = map[string]string{
+			"subnet": subnetUri,
+		}
+	}
+	var attributes interface{} = map[string]interface{}{
+		"name":               d.GetMachineName(),
+		"flavor":             flavorUri,
+		"image":              imageUri,
+		"system_volume_size": d.SystemVolumeSize * 1024,
+		"system_volume_type": systemVolumeTypeUri,
+		"data_volume_type":   dataVolumeTypeUri,
+		"ports":              subnets,
+		"security_groups":    securityGroups,
+		// TODO: add floating_ips
+		// "floating_ips": floating_ips,
+	}
+
+	acceptingTermsOfService := true
+
+	limits := map[string]int{}
+
+	hc := http.Client{}
+	auth, err := waldurclient.NewTokenAuth(d.ApiToken)
+	if err != nil {
+		log.Errorf("Error while creating token auth %s", err)
+		return err
+	}
+
+	client, err := waldurclient.NewClientWithResponses(d.ApiUrl, waldurclient.WithHTTPClient(&hc), waldurclient.WithRequestEditorFn(auth.Intercept))
+	if err != nil {
+		log.Errorf("Error creating Waldur client %s", err)
+		return err
+	}
+	requestType := waldurclient.RequestTypesCreate
+
+	payload := waldurclient.MarketplaceOrdersCreateJSONRequestBody{
+		AcceptingTermsOfService: &acceptingTermsOfService,
+		Attributes:              &attributes,
+		Limits:                  &limits,
+		Offering:                offeringUri,
+		Project:                 projectUri,
+		Type:                    &requestType,
+	}
+
+	ctx := context.Background()
+	resp, err := client.MarketplaceOrdersCreateWithResponse(ctx, payload)
+
+	if err != nil {
+		log.Errorf("Error calling API: %v", err)
+		return err
+	}
+
+	if resp.StatusCode() != 201 {
+		responseBody := string(resp.Body[:])
+		log.Errorf("Unable to create an instance %s, code %d, details", d.MachineName, resp.StatusCode(), responseBody)
+		msg := fmt.Sprintf("Unable to create an instance %s, code %d", d.MachineName, resp.StatusCode())
+		return errors.New(msg)
+	}
+
+	log.Infof("Successfully created instance %s", d.MachineName)
 	return nil
 }
 
