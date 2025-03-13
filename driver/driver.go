@@ -25,13 +25,12 @@ type Driver struct {
 	ApiToken             string
 	ProjectUuid          string
 	OfferingUuid         string
-	PlanUuid             string
 	FlavorUuid           string
 	ImageUuid            string
 	SystemVolumeSize     int
 	SystemVolumeTypeUuid string
 	DataVolumeTypeUuid   string
-	Subnets              []string
+	SubnetUuids          []string
 	SecurityGroupUuid    string
 }
 
@@ -64,6 +63,46 @@ func (d *Driver) GetCreateFlags() []mcnflag.Flag {
 			Name:   "waldur-proj-uuid",
 			Usage:  "UUID of the project in Waldur",
 		},
+		mcnflag.StringFlag{
+			EnvVar: "WALDUR_OFFERING_UUID",
+			Name:   "waldur-offering-uuid",
+			Usage:  "UUID of the VM offering in Waldur",
+		},
+		mcnflag.StringFlag{
+			EnvVar: "WALDUR_FLAVOR_UUID",
+			Name:   "waldur-flavor-uuid",
+			Usage:  "UUID of the VM flavor in Waldur",
+		},
+		mcnflag.StringFlag{
+			EnvVar: "WALDUR_IMAGE_UUID",
+			Name:   "waldur-image-uuid",
+			Usage:  "UUID of the VM image in Waldur",
+		},
+		mcnflag.IntFlag{
+			EnvVar: "WALDUR_SYS_VOLUME_SIZE",
+			Name:   "waldur-sys-volume-size",
+			Usage:  "System volume size for Waldur VM (GB)",
+		},
+		mcnflag.StringFlag{
+			EnvVar: "WALDUR_SYS_VOLUME_TYPE_UUID",
+			Name:   "waldur-sys-volume-type-uuid",
+			Usage:  "UUID of the system volume type in Waldur",
+		},
+		mcnflag.StringFlag{
+			EnvVar: "WALDUR_DATA_VOLUME_TYPE_UUID",
+			Name:   "waldur-data-volume-type-uuid",
+			Usage:  "UUID of the data volume type in Waldur",
+		},
+		mcnflag.StringFlag{
+			EnvVar: "WALDUR_SEC_GROUP_UUID",
+			Name:   "waldur-sec-group-uuid",
+			Usage:  "UUID of the security group in Waldur",
+		},
+		mcnflag.StringSliceFlag{
+			EnvVar: "WALDUR_SUBNET_UUIDS",
+			Name:   "waldur-subnet-uuids",
+			Usage:  "List of UUIDs of subnets in Waldur",
+		},
 	}
 }
 
@@ -71,6 +110,15 @@ func (d *Driver) GetCreateFlags() []mcnflag.Flag {
 func (d *Driver) SetConfigFromFlags(flags drivers.DriverOptions) error {
 	d.ApiUrl = flags.String("waldur-api-url")
 	d.ApiToken = flags.String("waldur-api-token")
+	d.ProjectUuid = flags.String("waldur-proj-uuid")
+	d.OfferingUuid = flags.String("waldur-offering-uuid")
+	d.FlavorUuid = flags.String("waldur-flavor-uuid")
+	d.ImageUuid = flags.String("waldur-image-uuid")
+	d.SystemVolumeSize = flags.Int("waldur-sys-volume-size")
+	d.SystemVolumeTypeUuid = flags.String("waldur-sys-volume-type-uuid")
+	d.DataVolumeTypeUuid = flags.String("waldur-data-volume-type-uuid")
+	d.SecurityGroupUuid = flags.String("waldur-sec-group-uuid")
+	d.SubnetUuids = flags.StringSlice("waldur-subnet-uuids")
 
 	// Validation
 	if d.ApiUrl == "" {
@@ -81,7 +129,33 @@ func (d *Driver) SetConfigFromFlags(flags drivers.DriverOptions) error {
 		return fmt.Errorf("Waldur requires the --waldur-api-token option")
 	}
 
-	d.Subnets = flags.StringSlice("waldur-subnets")
+	if d.ProjectUuid == "" {
+		return fmt.Errorf("Waldur requires the --waldur-proj-uuid option")
+	}
+	if d.OfferingUuid == "" {
+		return fmt.Errorf("Waldur requires the --waldur-offering-uuid option")
+	}
+	if d.FlavorUuid == "" {
+		return fmt.Errorf("Waldur requires the --waldur-flavor-uuid option")
+	}
+	if d.ImageUuid == "" {
+		return fmt.Errorf("Waldur requires the --waldur-image-uuid option")
+	}
+	if d.SystemVolumeSize == 0 {
+		return fmt.Errorf("Waldur requires the --waldur-sys-volume-size to be greater than 5 GB")
+	}
+	if d.SystemVolumeTypeUuid == "" {
+		return fmt.Errorf("Waldur requires the --waldur-sys-volume-type-uuid option")
+	}
+	if d.DataVolumeTypeUuid == "" {
+		return fmt.Errorf("Waldur requires the --waldur-data-volume-type-uuid option")
+	}
+	if d.SecurityGroupUuid == "" {
+		return fmt.Errorf("Waldur requires the --waldur-sec-group-uuid option")
+	}
+	if d.SubnetUuids == nil {
+		d.SubnetUuids = []string{}
+	}
 
 	return nil
 }
@@ -96,14 +170,14 @@ func (d *Driver) Create() error {
 	imageUri := fmt.Sprintf("%s/api/openstack-images/%s/", d.ApiUrl, d.ImageUuid)
 	systemVolumeTypeUri := fmt.Sprintf("%s/api/openstack-volume-types/%s/", d.ApiUrl, d.SystemVolumeTypeUuid)
 	dataVolumeTypeUri := fmt.Sprintf("%s/api/openstack-volume-types/%s/", d.ApiUrl, d.DataVolumeTypeUuid)
-	subnets := make([]map[string]string, len(d.Subnets))
+	subnets := make([]map[string]string, len(d.SubnetUuids))
 	defaultSecGroupUri := fmt.Sprintf("%s/api/openstack-security-groups/%s/", d.ApiUrl, d.SecurityGroupUuid)
 	securityGroups := make([]map[string]string, 1)
 	securityGroups[0] = map[string]string{
 		"url": defaultSecGroupUri,
 	}
 
-	for i, subnet := range d.Subnets {
+	for i, subnet := range d.SubnetUuids {
 		subnetUri := fmt.Sprintf("%s/api/openstack-subnets/%s/", d.ApiUrl, subnet)
 		subnets[i] = map[string]string{
 			"subnet": subnetUri,
@@ -147,7 +221,6 @@ func (d *Driver) Create() error {
 		Offering:                offeringUri,
 		Project:                 projectUri,
 		Type:                    &requestType,
-		// Plan:                    &planUri,
 	}
 
 	ctx := context.Background()
