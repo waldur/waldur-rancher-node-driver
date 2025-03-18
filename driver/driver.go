@@ -310,9 +310,7 @@ func (d *Driver) GetState() (state.State, error) {
 		return state.None, nil
 	}
 
-	resourceState := waldurclient.CoreStates(resourceStateStr)
-
-	resourceStateMap := map[waldurclient.CoreStates]state.State {
+	resourceStateMap := map[string]state.State {
 		"ACTIVE": state.Running,
 		"BUILDING": state.Starting,
 		"DELETED": state.Stopped,
@@ -328,8 +326,8 @@ func (d *Driver) GetState() (state.State, error) {
 		"SUSPENDED": state.Paused,
 	}
 
-	log.Infof("Successfully fetched instance, state %s", resourceState)
-	return resourceStateMap[resourceState], nil
+	log.Infof("Successfully fetched instance, state %s", resourceStateStr)
+	return resourceStateMap[resourceStateStr], nil
 }
 
 // Start starts the host
