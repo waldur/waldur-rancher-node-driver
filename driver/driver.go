@@ -179,6 +179,30 @@ func (d *Driver) getWaldurClient() (*waldurclient.ClientWithResponses, error) {
 	return client, nil
 }
 
+func (d *Driver) getWaldurResource(client waldurclient.ClientWithResponses) (*waldurclient.Resource, error) {
+	ctx := context.Background()
+	resourceUuid, err := uuid.Parse(d.ResourceUuid)
+	if err != nil {
+		log.Errorf("Error converting resource UUID string to UUID object: %s", err)
+		return nil, err
+	}
+	resp, err := client.MarketplaceResourcesRetrieveWithResponse(ctx, resourceUuid, &waldurclient.MarketplaceResourcesRetrieveParams{})
+
+	if err != nil {
+		log.Errorf("Error calling instance retrieval API: %v", err)
+		return nil, err
+	}
+
+	if resp.StatusCode() != 200 {
+		responseBody := string(resp.Body[:])
+		log.Errorf("Unable to fetch the instance %s (%s), code %d, details", d.GetMachineName(), d.ResourceUuid, resp.StatusCode(), responseBody)
+		msg := fmt.Sprintf("Unable to fetch the instance %s (%s), code %d", d.GetMachineName(), d.ResourceUuid, resp.StatusCode())
+		return nil, errors.New(msg)
+	}
+
+	return resp.JSON200, nil
+}
+
 // Create creates a host in Waldur using the driver's config
 func (d *Driver) Create() error {
 	log.Infof("Creating instance for %s...", d.GetMachineName())
@@ -277,27 +301,12 @@ func (d *Driver) GetState() (state.State, error) {
 		return state.None, err
 	}
 
-	ctx := context.Background()
-	resourceUuid, err := uuid.Parse(d.ResourceUuid)
+	resource, err := d.getWaldurResource(*client)
 	if err != nil {
-		log.Errorf("Error converting resource UUID string to UUID object: %s", err)
-		return state.None, err
-	}
-	resp, err := client.MarketplaceResourcesRetrieveWithResponse(ctx, resourceUuid, &waldurclient.MarketplaceResourcesRetrieveParams{})
-
-	if err != nil {
-		log.Errorf("Error calling instance retrieval API: %v", err)
 		return state.None, err
 	}
 
-	if resp.StatusCode() != 200 {
-		responseBody := string(resp.Body[:])
-		log.Errorf("Unable to fetch the instance %s (%s), code %d, details", d.GetMachineName(), d.ResourceUuid, resp.StatusCode(), responseBody)
-		msg := fmt.Sprintf("Unable to fetch the instance %s (%s), code %d", d.GetMachineName(), d.ResourceUuid, resp.StatusCode())
-		return state.None, errors.New(msg)
-	}
-
-	resourceState := waldurclient.CoreStates(*resp.JSON200.BackendMetadata.State)
+	resourceState := waldurclient.CoreStates(*resource.BackendMetadata.State)
 
 	resourceStateMap := map[waldurclient.CoreStates]state.State{
 		waldurclient.CoreStatesCREATING:          state.Starting,
@@ -323,33 +332,18 @@ func (d *Driver) Start() error {
 		return err
 	}
 
+	resource, err := d.getWaldurResource(*client)
+	if err != nil {
+		return err
+	}
+
+	instanceUuid, err := uuid.Parse(*resource.BackendId)
+	if err != nil {
+		log.Errorf("Error converting resource UUID string to UUID object: %s", err)
+		return err
+	}
+
 	ctx := context.Background()
-	resourceUuid, err := uuid.Parse(d.ResourceUuid)
-	if err != nil {
-		log.Errorf("Error converting resource UUID string to UUID object: %s", err)
-		return err
-	}
-
-	resp, err := client.MarketplaceResourcesRetrieveWithResponse(ctx, resourceUuid, &waldurclient.MarketplaceResourcesRetrieveParams{})
-
-	if err != nil {
-		log.Errorf("Error calling instance retrieval API: %v", err)
-		return err
-	}
-
-	if resp.StatusCode() != 200 {
-		responseBody := string(resp.Body[:])
-		log.Errorf("Unable to fetch the instance %s (%s), code %d, details", d.GetMachineName(), d.ResourceUuid, resp.StatusCode(), responseBody)
-		msg := fmt.Sprintf("Unable to fetch the instance %s (%s), code %d", d.GetMachineName(), d.ResourceUuid, resp.StatusCode())
-		return errors.New(msg)
-	}
-
-	instanceUuid, err := uuid.Parse(*resp.JSON200.BackendId)
-	if err != nil {
-		log.Errorf("Error converting resource UUID string to UUID object: %s", err)
-		return err
-	}
-
 	instanceResp, err := client.OpenstackInstancesStartWithResponse(ctx, instanceUuid)
 
 	if err != nil {
