@@ -195,10 +195,12 @@ func (d *Driver) getWaldurResource(client waldurclient.ClientWithResponses) (*wa
 
 	if resp.StatusCode() != 200 {
 		responseBody := string(resp.Body[:])
-		log.Errorf("Unable to fetch the instance %s (%s), code %d, details", d.GetMachineName(), d.ResourceUuid, resp.StatusCode(), responseBody)
+		log.Errorf("Unable to fetch the instance %s (%s), code %d, details: %s", d.GetMachineName(), d.ResourceUuid, resp.StatusCode(), responseBody)
 		msg := fmt.Sprintf("Unable to fetch the instance %s (%s), code %d", d.GetMachineName(), d.ResourceUuid, resp.StatusCode())
 		return nil, errors.New(msg)
 	}
+
+	log.Infof("Successfully fetched resource %s (%s)", d.GetMachineName(), d.ResourceUuid)
 
 	return resp.JSON200, nil
 }
@@ -269,7 +271,7 @@ func (d *Driver) Create() error {
 
 	if resp.StatusCode() != 201 {
 		responseBody := string(resp.Body[:])
-		log.Errorf("Unable to create an instance %s, code %d, details", d.GetMachineName(), resp.StatusCode(), responseBody)
+		log.Errorf("Unable to create an instance %s, code %d, details: %s", d.GetMachineName(), resp.StatusCode(), responseBody)
 		msg := fmt.Sprintf("Unable to create an instance %s, code %d", d.GetMachineName(), resp.StatusCode())
 		return errors.New(msg)
 	}
@@ -280,9 +282,6 @@ func (d *Driver) Create() error {
 
 // PreCreateCheck validates parameters and checks if creation is possible
 func (d *Driver) PreCreateCheck() error {
-	// Implement any pre-creation checks
-	// TODO
-
 	return nil
 }
 
@@ -305,6 +304,11 @@ func (d *Driver) GetState() (state.State, error) {
 	if err != nil {
 		return state.None, err
 	}
+
+	if resource.BackendMetadata.RuntimeState == nil {
+		return state.None, nil
+	}
+
 	resourceStateStr := *resource.BackendMetadata.RuntimeState
 	if resourceStateStr == "" {
 		return state.None, nil
@@ -326,7 +330,7 @@ func (d *Driver) GetState() (state.State, error) {
 		"SUSPENDED": state.Paused,
 	}
 
-	log.Infof("Successfully fetched instance, state %s", resourceStateStr)
+	log.Infof("Instance %s, state %s", d.GetMachineName(), resourceStateStr)
 	return resourceStateMap[resourceStateStr], nil
 }
 
@@ -354,7 +358,7 @@ func (d *Driver) Start() error {
 
 	if instanceResp.StatusCode() != 202 {
 		responseBody := string(instanceResp.Body[:])
-		log.Errorf("Unable to start the instance %s (%s), code %d, details", d.GetMachineName(), d.ResourceUuid, instanceResp.StatusCode(), responseBody)
+		log.Errorf("Unable to start the instance %s (%s), code %d, details: %s", d.GetMachineName(), d.ResourceUuid, instanceResp.StatusCode(), responseBody)
 		msg := fmt.Sprintf("Unable to start the instance %s (%s), code %d", d.GetMachineName(), d.ResourceUuid, instanceResp.StatusCode())
 		return errors.New(msg)
 	}
@@ -380,7 +384,6 @@ func (d *Driver) Stop() error {
 
 	ctx := context.Background()
 	instanceResp, err := client.OpenstackInstancesStopWithResponse(ctx, *resource.ResourceUuid)
-	log.Infof("Req: %s", instanceResp.HTTPResponse.Request.URL)
 
 	if err != nil {
 		log.Errorf("Error calling instance stopping API: %v", err)
@@ -389,7 +392,7 @@ func (d *Driver) Stop() error {
 
 	if instanceResp.StatusCode() != 202 {
 		responseBody := string(instanceResp.Body[:])
-		log.Errorf("Unable to stop the instance %s (%s), code %d, details", d.GetMachineName(), d.ResourceUuid, instanceResp.StatusCode(), responseBody)
+		log.Errorf("Unable to stop the instance %s (%s), code %d, details: %s", d.GetMachineName(), d.ResourceUuid, instanceResp.StatusCode(), responseBody)
 		msg := fmt.Sprintf("Unable to stop the instance %s (%s), code %d", d.GetMachineName(), d.ResourceUuid, instanceResp.StatusCode())
 		return errors.New(msg)
 	}
@@ -423,7 +426,7 @@ func (d *Driver) Restart() error {
 
 	if instanceResp.StatusCode() != 202 {
 		responseBody := string(instanceResp.Body[:])
-		log.Errorf("Unable to restart the instance %s (%s), code %d, details", d.GetMachineName(), d.ResourceUuid, instanceResp.StatusCode(), responseBody)
+		log.Errorf("Unable to restart the instance %s (%s), code %d, details: %s", d.GetMachineName(), d.ResourceUuid, instanceResp.StatusCode(), responseBody)
 		msg := fmt.Sprintf("Unable to restart the instance %s (%s), code %d", d.GetMachineName(), d.ResourceUuid, instanceResp.StatusCode())
 		return errors.New(msg)
 	}
@@ -435,15 +438,84 @@ func (d *Driver) Restart() error {
 
 // Kill forcefully stops the host
 func (d *Driver) Kill() error {
-	// TODO: implement the API call to force stop the instance
-	log.Infof("Force stopping instance %s", "")
+	log.Infof("Force removing instance %s", d.GetMachineName())
+	client, err := d.getWaldurClient()
+	if err != nil {
+		log.Errorf("Error creating Waldur client %s", err)
+		return err
+	}
+
+	ctx := context.Background()
+	resourceUuid, err := uuid.Parse(d.ResourceUuid)
+	if err != nil {
+		log.Errorf("Error converting resource UUID string to UUID object: %s", err)
+		return err
+	}
+
+	var attributes interface{} = map[string]interface{} {
+		"delete_volumes":true,
+		"release_floating_ips": true,
+		"action": "force_destroy",
+	}
+	payload := waldurclient.MarketplaceResourcesTerminateJSONRequestBody{
+		Attributes: &attributes,
+	}
+	resp, err := client.MarketplaceResourcesTerminateWithResponse(ctx, resourceUuid, payload)
+
+	if err != nil {
+		log.Errorf("Error calling instance termination API: %v", err)
+		return err
+	}
+
+	if resp.StatusCode() != 200 {
+		responseBody := string(resp.Body[:])
+		log.Errorf("Unable to terminate the instance %s (%s), code %d, details: %s", d.GetMachineName(), d.ResourceUuid, resp.StatusCode(), responseBody)
+		msg := fmt.Sprintf("Unable to fetch the instance %s (%s), code %d", d.GetMachineName(), d.ResourceUuid, resp.StatusCode())
+		return errors.New(msg)
+	}
+
+	log.Infof("Successfully force removed the instance %s", d.GetMachineName())
 	return nil
 }
 
 // Remove removes the host
 func (d *Driver) Remove() error {
-	// TODO: implement the API call to delete the instance
-	log.Infof("Removing instance %s", "")
+	log.Infof("Removing instance %s", d.GetMachineName())
+	client, err := d.getWaldurClient()
+	if err != nil {
+		log.Errorf("Error creating Waldur client %s", err)
+		return err
+	}
+
+	ctx := context.Background()
+	resourceUuid, err := uuid.Parse(d.ResourceUuid)
+	if err != nil {
+		log.Errorf("Error converting resource UUID string to UUID object: %s", err)
+		return err
+	}
+	// TODO: stop instance prior to removal?
+	var attributes interface{} = map[string]bool {
+		"delete_volumes":true,
+		"release_floating_ips": true,
+	}
+	payload := waldurclient.MarketplaceResourcesTerminateJSONRequestBody{
+		Attributes: &attributes,
+	}
+	resp, err := client.MarketplaceResourcesTerminateWithResponse(ctx, resourceUuid, payload)
+
+	if err != nil {
+		log.Errorf("Error calling instance termination API: %v", err)
+		return err
+	}
+
+	if resp.StatusCode() != 200 {
+		responseBody := string(resp.Body[:])
+		log.Errorf("Unable to terminate the instance %s (%s), code %d, details: %s", d.GetMachineName(), d.ResourceUuid, resp.StatusCode(), responseBody)
+		msg := fmt.Sprintf("Unable to fetch the instance %s (%s), code %d", d.GetMachineName(), d.ResourceUuid, resp.StatusCode())
+		return errors.New(msg)
+	}
+
+	log.Infof("Successfully removed the instance %s", d.GetMachineName())
 	return nil
 }
 
