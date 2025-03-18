@@ -105,6 +105,11 @@ func (d *Driver) GetCreateFlags() []mcnflag.Flag {
 			Name:   "waldur-subnet-uuids",
 			Usage:  "List of UUIDs of subnets in Waldur",
 		},
+		mcnflag.StringFlag{
+			EnvVar: "WALDUR_RESOURCE_UUID",
+			Name:   "waldur-resource-uuid",
+			Usage:  "UUID of the marketplace resource in Waldur",
+		},
 	}
 }
 
@@ -121,6 +126,7 @@ func (d *Driver) SetConfigFromFlags(flags drivers.DriverOptions) error {
 	d.DataVolumeTypeUuid = flags.String("waldur-data-volume-type-uuid")
 	d.SecurityGroupUuid = flags.String("waldur-sec-group-uuid")
 	d.SubnetUuids = flags.StringSlice("waldur-subnet-uuids")
+	d.ResourceUuid = flags.String("waldur-resource-uuid")
 
 	// Validation
 	if d.ApiUrl == "" {
