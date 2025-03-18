@@ -370,7 +370,7 @@ func (d *Driver) Start() error {
 
 // Stop stops the host
 func (d *Driver) Stop() error {
-	log.Infof("Stopping instance %s", d.GetMachineName())
+	log.Infof("Stopping the instance %s", d.GetMachineName())
 	client, err := d.getWaldurClient()
 	if err != nil {
 		log.Errorf("Error creating Waldur client %s", err)
@@ -469,8 +469,8 @@ func (d *Driver) Kill() error {
 
 	if resp.StatusCode() != 200 {
 		responseBody := string(resp.Body[:])
-		log.Errorf("Unable to terminate the instance %s (%s), code %d, details: %s", d.GetMachineName(), d.ResourceUuid, resp.StatusCode(), responseBody)
-		msg := fmt.Sprintf("Unable to fetch the instance %s (%s), code %d", d.GetMachineName(), d.ResourceUuid, resp.StatusCode())
+		log.Errorf("Unable to force remove the instance %s (%s), code %d, details: %s", d.GetMachineName(), d.ResourceUuid, resp.StatusCode(), responseBody)
+		msg := fmt.Sprintf("Unable to force remove the instance %s (%s), code %d", d.GetMachineName(), d.ResourceUuid, resp.StatusCode())
 		return errors.New(msg)
 	}
 
@@ -504,14 +504,14 @@ func (d *Driver) Remove() error {
 	resp, err := client.MarketplaceResourcesTerminateWithResponse(ctx, resourceUuid, payload)
 
 	if err != nil {
-		log.Errorf("Error calling instance termination API: %v", err)
+		log.Errorf("Error calling instance removal API: %v", err)
 		return err
 	}
 
 	if resp.StatusCode() != 200 {
 		responseBody := string(resp.Body[:])
-		log.Errorf("Unable to terminate the instance %s (%s), code %d, details: %s", d.GetMachineName(), d.ResourceUuid, resp.StatusCode(), responseBody)
-		msg := fmt.Sprintf("Unable to fetch the instance %s (%s), code %d", d.GetMachineName(), d.ResourceUuid, resp.StatusCode())
+		log.Errorf("Unable to remove the instance %s (%s), code %d, details: %s", d.GetMachineName(), d.ResourceUuid, resp.StatusCode(), responseBody)
+		msg := fmt.Sprintf("Unable to remove the instance %s (%s), code %d", d.GetMachineName(), d.ResourceUuid, resp.StatusCode())
 		return errors.New(msg)
 	}
 
