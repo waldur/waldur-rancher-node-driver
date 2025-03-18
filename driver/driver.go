@@ -11,6 +11,7 @@ import (
 	"github.com/docker/machine/libmachine/log"
 	"github.com/docker/machine/libmachine/mcnflag"
 	"github.com/docker/machine/libmachine/state"
+	"github.com/google/uuid"
 	waldurclient "github.com/waldur/go-client"
 )
 
@@ -32,6 +33,7 @@ type Driver struct {
 	DataVolumeTypeUuid   string
 	SubnetUuids          []string
 	SecurityGroupUuid    string
+	ResourceUuid         string
 }
 
 // NewDriver creates and returns a new instance of Waldur driver
@@ -160,6 +162,23 @@ func (d *Driver) SetConfigFromFlags(flags drivers.DriverOptions) error {
 	return nil
 }
 
+func (d *Driver) getWaldurClient() (*waldurclient.ClientWithResponses, error) {
+	hc := http.Client{}
+	auth, err := waldurclient.NewTokenAuth(d.ApiToken)
+	if err != nil {
+		log.Errorf("Error while creating token auth %s", err)
+		return nil, err
+	}
+
+	client, err := waldurclient.NewClientWithResponses(d.ApiUrl, waldurclient.WithHTTPClient(&hc), waldurclient.WithRequestEditorFn(auth.Intercept))
+	if err != nil {
+		log.Errorf("Error creating Waldur client %s", err)
+		return nil, err
+	}
+
+	return client, nil
+}
+
 // Create creates a host in Waldur using the driver's config
 func (d *Driver) Create() error {
 	log.Infof("Creating instance for %s...", d.MachineName)
@@ -200,14 +219,7 @@ func (d *Driver) Create() error {
 
 	limits := map[string]int{}
 
-	hc := http.Client{}
-	auth, err := waldurclient.NewTokenAuth(d.ApiToken)
-	if err != nil {
-		log.Errorf("Error while creating token auth %s", err)
-		return err
-	}
-
-	client, err := waldurclient.NewClientWithResponses(d.ApiUrl, waldurclient.WithHTTPClient(&hc), waldurclient.WithRequestEditorFn(auth.Intercept))
+	client, err := d.getWaldurClient()
 	if err != nil {
 		log.Errorf("Error creating Waldur client %s", err)
 		return err
@@ -227,7 +239,7 @@ func (d *Driver) Create() error {
 	resp, err := client.MarketplaceOrdersCreateWithResponse(ctx, payload)
 
 	if err != nil {
-		log.Errorf("Error calling API: %v", err)
+		log.Errorf("Error calling API for instance creation: %v", err)
 		return err
 	}
 
@@ -259,9 +271,47 @@ func (d *Driver) GetURL() (string, error) {
 // GetState returns the state of the host
 func (d *Driver) GetState() (state.State, error) {
 	// Here you would implement the API call to check the instance state
-	// TODO
+	client, err := d.getWaldurClient()
+	if err != nil {
+		log.Errorf("Error creating Waldur client %s", err)
+		return state.None, err
+	}
 
-	return state.Running, nil
+	ctx := context.Background()
+	resourceUuid, err := uuid.Parse(d.ResourceUuid)
+	if err != nil {
+		log.Errorf("Error converting resource UUID string to UUID object: %s", err)
+		return state.None, err
+	}
+	resp, err := client.MarketplaceResourcesRetrieveWithResponse(ctx, resourceUuid, &waldurclient.MarketplaceResourcesRetrieveParams{})
+
+	if err != nil {
+		log.Errorf("Error calling instance retrieval API: %v", err)
+		return state.None, err
+	}
+
+	if resp.StatusCode() != 200 {
+		responseBody := string(resp.Body[:])
+		log.Errorf("Unable to fetch an instance %s (%s), code %d, details", d.MachineName, d.ResourceUuid, resp.StatusCode(), responseBody)
+		msg := fmt.Sprintf("Unable to fetch an instance %s (%s), code %d", d.MachineName, d.ResourceUuid, resp.StatusCode())
+		return state.None, errors.New(msg)
+	}
+
+	resourceState := waldurclient.CoreStates(*resp.JSON200.BackendMetadata.State)
+
+	resourceStateMap := map[waldurclient.CoreStates]state.State{
+		waldurclient.CoreStatesCREATING:          state.Starting,
+		waldurclient.CoreStatesCREATIONSCHEDULED: state.Starting,
+		waldurclient.CoreStatesDELETING:          state.Stopping,
+		waldurclient.CoreStatesDELETIONSCHEDULED: state.Stopping,
+		waldurclient.CoreStatesERRED:             state.Error,
+		waldurclient.CoreStatesOK:                state.Running,
+		waldurclient.CoreStatesUPDATESCHEDULED:   state.Running,
+		waldurclient.CoreStatesUPDATING:          state.Running,
+	}
+
+	log.Infof("Successfully fetched instance, state %s", resourceState)
+	return resourceStateMap[resourceState], nil
 }
 
 // Start starts the host
