@@ -181,7 +181,7 @@ func (d *Driver) getWaldurClient() (*waldurclient.ClientWithResponses, error) {
 
 // Create creates a host in Waldur using the driver's config
 func (d *Driver) Create() error {
-	log.Infof("Creating instance for %s...", d.MachineName)
+	log.Infof("Creating instance for %s...", d.GetMachineName())
 
 	projectUri := fmt.Sprintf("%s/api/projects/%s/", d.ApiUrl, d.ProjectUuid)
 	offeringUri := fmt.Sprintf("%s/api/marketplace-public-offerings/%s/", d.ApiUrl, d.OfferingUuid)
@@ -245,12 +245,12 @@ func (d *Driver) Create() error {
 
 	if resp.StatusCode() != 201 {
 		responseBody := string(resp.Body[:])
-		log.Errorf("Unable to create an instance %s, code %d, details", d.MachineName, resp.StatusCode(), responseBody)
-		msg := fmt.Sprintf("Unable to create an instance %s, code %d", d.MachineName, resp.StatusCode())
+		log.Errorf("Unable to create an instance %s, code %d, details", d.GetMachineName(), resp.StatusCode(), responseBody)
+		msg := fmt.Sprintf("Unable to create an instance %s, code %d", d.GetMachineName(), resp.StatusCode())
 		return errors.New(msg)
 	}
 
-	log.Infof("Successfully created instance %s", d.MachineName)
+	log.Infof("Successfully created instance %s", d.GetMachineName())
 	return nil
 }
 
@@ -292,8 +292,8 @@ func (d *Driver) GetState() (state.State, error) {
 
 	if resp.StatusCode() != 200 {
 		responseBody := string(resp.Body[:])
-		log.Errorf("Unable to fetch an instance %s (%s), code %d, details", d.MachineName, d.ResourceUuid, resp.StatusCode(), responseBody)
-		msg := fmt.Sprintf("Unable to fetch an instance %s (%s), code %d", d.MachineName, d.ResourceUuid, resp.StatusCode())
+		log.Errorf("Unable to fetch the instance %s (%s), code %d, details", d.GetMachineName(), d.ResourceUuid, resp.StatusCode(), responseBody)
+		msg := fmt.Sprintf("Unable to fetch the instance %s (%s), code %d", d.GetMachineName(), d.ResourceUuid, resp.StatusCode())
 		return state.None, errors.New(msg)
 	}
 
@@ -316,8 +316,56 @@ func (d *Driver) GetState() (state.State, error) {
 
 // Start starts the host
 func (d *Driver) Start() error {
-	// TODO: implement the API call to start the instance
-	log.Infof("Starting instance %s")
+	log.Infof("Starting instance %s", d.GetMachineName())
+	client, err := d.getWaldurClient()
+	if err != nil {
+		log.Errorf("Error creating Waldur client %s", err)
+		return err
+	}
+
+	ctx := context.Background()
+	resourceUuid, err := uuid.Parse(d.ResourceUuid)
+	if err != nil {
+		log.Errorf("Error converting resource UUID string to UUID object: %s", err)
+		return err
+	}
+
+	resp, err := client.MarketplaceResourcesRetrieveWithResponse(ctx, resourceUuid, &waldurclient.MarketplaceResourcesRetrieveParams{})
+
+	if err != nil {
+		log.Errorf("Error calling instance retrieval API: %v", err)
+		return err
+	}
+
+	if resp.StatusCode() != 200 {
+		responseBody := string(resp.Body[:])
+		log.Errorf("Unable to fetch the instance %s (%s), code %d, details", d.GetMachineName(), d.ResourceUuid, resp.StatusCode(), responseBody)
+		msg := fmt.Sprintf("Unable to fetch the instance %s (%s), code %d", d.GetMachineName(), d.ResourceUuid, resp.StatusCode())
+		return errors.New(msg)
+	}
+
+	instanceUuid, err := uuid.Parse(*resp.JSON200.BackendId)
+	if err != nil {
+		log.Errorf("Error converting resource UUID string to UUID object: %s", err)
+		return err
+	}
+
+	instanceResp, err := client.OpenstackInstancesStartWithResponse(ctx, instanceUuid)
+
+	if err != nil {
+		log.Errorf("Error calling instance starting API: %v", err)
+		return err
+	}
+
+	if instanceResp.StatusCode() != 202 {
+		responseBody := string(instanceResp.Body[:])
+		log.Errorf("Unable to start the instance %s (%s), code %d, details", d.GetMachineName(), d.ResourceUuid, instanceResp.StatusCode(), responseBody)
+		msg := fmt.Sprintf("Unable to start the instance %s (%s), code %d", d.GetMachineName(), d.ResourceUuid, instanceResp.StatusCode())
+		return errors.New(msg)
+	}
+
+	log.Infof("Successfully started the instance %s", d.GetMachineName())
+
 	return nil
 }
 
