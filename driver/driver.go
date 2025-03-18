@@ -288,8 +288,8 @@ func (d *Driver) PreCreateCheck() error {
 
 // GetURL returns the URL of the docker daemon on the host
 func (d *Driver) GetURL() (string, error) {
-	// TODO
-	return "", nil
+	url := fmt.Sprintf("%s/api/marketplace-resources/%s/", d.ApiUrl, d.ResourceUuid)
+	return url, nil
 }
 
 // GetState returns the state of the host
@@ -305,18 +305,27 @@ func (d *Driver) GetState() (state.State, error) {
 	if err != nil {
 		return state.None, err
 	}
+	resourceStateStr := *resource.BackendMetadata.RuntimeState
+	if resourceStateStr == "" {
+		return state.None, nil
+	}
 
-	resourceState := waldurclient.CoreStates(*resource.BackendMetadata.State)
+	resourceState := waldurclient.CoreStates(resourceStateStr)
 
-	resourceStateMap := map[waldurclient.CoreStates]state.State{
-		waldurclient.CoreStatesCREATING:          state.Starting,
-		waldurclient.CoreStatesCREATIONSCHEDULED: state.Starting,
-		waldurclient.CoreStatesDELETING:          state.Stopping,
-		waldurclient.CoreStatesDELETIONSCHEDULED: state.Stopping,
-		waldurclient.CoreStatesERRED:             state.Error,
-		waldurclient.CoreStatesOK:                state.Running,
-		waldurclient.CoreStatesUPDATESCHEDULED:   state.Running,
-		waldurclient.CoreStatesUPDATING:          state.Running,
+	resourceStateMap := map[waldurclient.CoreStates]state.State {
+		"ACTIVE": state.Running,
+		"BUILDING": state.Starting,
+		"DELETED": state.Stopped,
+		"SOFT_DELETED": state.Stopped,
+		"ERROR": state.Error,
+		"UNKNOWN": state.None,
+		"HARD_REBOOT": state.Starting,
+		"REBOOT": state.Starting,
+		"REBUILD": state.Starting,
+		"PAUSED": state.Paused,
+		"SHUTOFF": state.Stopped,
+		"STOPPED": state.Stopped,
+		"SUSPENDED": state.Paused,
 	}
 
 	log.Infof("Successfully fetched instance, state %s", resourceState)
@@ -337,14 +346,8 @@ func (d *Driver) Start() error {
 		return err
 	}
 
-	instanceUuid, err := uuid.Parse(*resource.BackendId)
-	if err != nil {
-		log.Errorf("Error converting resource UUID string to UUID object: %s", err)
-		return err
-	}
-
 	ctx := context.Background()
-	instanceResp, err := client.OpenstackInstancesStartWithResponse(ctx, instanceUuid)
+	instanceResp, err := client.OpenstackInstancesStartWithResponse(ctx, *resource.ResourceUuid)
 
 	if err != nil {
 		log.Errorf("Error calling instance starting API: %v", err)
@@ -365,15 +368,70 @@ func (d *Driver) Start() error {
 
 // Stop stops the host
 func (d *Driver) Stop() error {
-	// TODO: implement the API call to stop the instance
-	log.Infof("Stopping instance %s", "")
+	log.Infof("Stopping instance %s", d.GetMachineName())
+	client, err := d.getWaldurClient()
+	if err != nil {
+		log.Errorf("Error creating Waldur client %s", err)
+		return err
+	}
+
+	resource, err := d.getWaldurResource(*client)
+	if err != nil {
+		return err
+	}
+
+	ctx := context.Background()
+	instanceResp, err := client.OpenstackInstancesStopWithResponse(ctx, *resource.ResourceUuid)
+	log.Infof("Req: %s", instanceResp.HTTPResponse.Request.URL)
+
+	if err != nil {
+		log.Errorf("Error calling instance stopping API: %v", err)
+		return err
+	}
+
+	if instanceResp.StatusCode() != 202 {
+		responseBody := string(instanceResp.Body[:])
+		log.Errorf("Unable to stop the instance %s (%s), code %d, details", d.GetMachineName(), d.ResourceUuid, instanceResp.StatusCode(), responseBody)
+		msg := fmt.Sprintf("Unable to stop the instance %s (%s), code %d", d.GetMachineName(), d.ResourceUuid, instanceResp.StatusCode())
+		return errors.New(msg)
+	}
+
+	log.Infof("Successfully stopped the instance %s", d.GetMachineName())
+
 	return nil
 }
 
 // Restart restarts the host
 func (d *Driver) Restart() error {
-	// TODO: implement the API call to restart the instance
-	log.Infof("Restarting instance %s", "")
+	log.Infof("Restarting instance %s", d.GetMachineName())
+	client, err := d.getWaldurClient()
+	if err != nil {
+		log.Errorf("Error creating Waldur client %s", err)
+		return err
+	}
+
+	resource, err := d.getWaldurResource(*client)
+	if err != nil {
+		return err
+	}
+
+	ctx := context.Background()
+	instanceResp, err := client.OpenstackInstancesRestartWithResponse(ctx, *resource.ResourceUuid)
+
+	if err != nil {
+		log.Errorf("Error calling instance restarting API: %v", err)
+		return err
+	}
+
+	if instanceResp.StatusCode() != 202 {
+		responseBody := string(instanceResp.Body[:])
+		log.Errorf("Unable to restart the instance %s (%s), code %d, details", d.GetMachineName(), d.ResourceUuid, instanceResp.StatusCode(), responseBody)
+		msg := fmt.Sprintf("Unable to restart the instance %s (%s), code %d", d.GetMachineName(), d.ResourceUuid, instanceResp.StatusCode())
+		return errors.New(msg)
+	}
+
+	log.Infof("Successfully restarted the instance %s", d.GetMachineName())
+
 	return nil
 }
 
