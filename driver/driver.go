@@ -314,20 +314,20 @@ func (d *Driver) GetState() (state.State, error) {
 		return state.None, nil
 	}
 
-	resourceStateMap := map[string]state.State {
-		"ACTIVE": state.Running,
-		"BUILDING": state.Starting,
-		"DELETED": state.Stopped,
+	resourceStateMap := map[string]state.State{
+		"ACTIVE":       state.Running,
+		"BUILDING":     state.Starting,
+		"DELETED":      state.Stopped,
 		"SOFT_DELETED": state.Stopped,
-		"ERROR": state.Error,
-		"UNKNOWN": state.None,
-		"HARD_REBOOT": state.Starting,
-		"REBOOT": state.Starting,
-		"REBUILD": state.Starting,
-		"PAUSED": state.Paused,
-		"SHUTOFF": state.Stopped,
-		"STOPPED": state.Stopped,
-		"SUSPENDED": state.Paused,
+		"ERROR":        state.Error,
+		"UNKNOWN":      state.None,
+		"HARD_REBOOT":  state.Starting,
+		"REBOOT":       state.Starting,
+		"REBUILD":      state.Starting,
+		"PAUSED":       state.Paused,
+		"SHUTOFF":      state.Stopped,
+		"STOPPED":      state.Stopped,
+		"SUSPENDED":    state.Paused,
 	}
 
 	log.Infof("Instance %s, state %s", d.GetMachineName(), resourceStateStr)
@@ -452,10 +452,10 @@ func (d *Driver) Kill() error {
 		return err
 	}
 
-	var attributes interface{} = map[string]interface{} {
-		"delete_volumes":true,
+	var attributes interface{} = map[string]interface{}{
+		"delete_volumes":       true,
 		"release_floating_ips": true,
-		"action": "force_destroy",
+		"action":               "force_destroy",
 	}
 	payload := waldurclient.MarketplaceResourcesTerminateJSONRequestBody{
 		Attributes: &attributes,
@@ -494,8 +494,8 @@ func (d *Driver) Remove() error {
 		return err
 	}
 	// TODO: stop instance prior to removal?
-	var attributes interface{} = map[string]bool {
-		"delete_volumes":true,
+	var attributes interface{} = map[string]bool{
+		"delete_volumes":       true,
 		"release_floating_ips": true,
 	}
 	payload := waldurclient.MarketplaceResourcesTerminateJSONRequestBody{
