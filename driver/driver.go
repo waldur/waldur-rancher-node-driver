@@ -7,11 +7,11 @@ import (
 
 	"net/http"
 
-	"github.com/docker/machine/libmachine/drivers"
-	"github.com/docker/machine/libmachine/log"
-	"github.com/docker/machine/libmachine/mcnflag"
-	"github.com/docker/machine/libmachine/state"
 	"github.com/google/uuid"
+	"github.com/rancher/machine/libmachine/drivers"
+	"github.com/rancher/machine/libmachine/log"
+	"github.com/rancher/machine/libmachine/mcnflag"
+	"github.com/rancher/machine/libmachine/state"
 	waldurclient "github.com/waldur/go-client"
 )
 
@@ -34,6 +34,7 @@ type Driver struct {
 	SubnetUuids          []string
 	SecurityGroupUuid    string
 	ResourceUuid         string
+	UserData             string
 }
 
 // NewDriver creates and returns a new instance of Waldur driver
@@ -106,9 +107,9 @@ func (d *Driver) GetCreateFlags() []mcnflag.Flag {
 			Usage:  "List of UUIDs of subnets in Waldur",
 		},
 		mcnflag.StringFlag{
-			EnvVar: "WALDUR_RESOURCE_UUID",
-			Name:   "waldur-resource-uuid",
-			Usage:  "UUID of the marketplace resource in Waldur",
+			EnvVar: "WALDUR_USER_DATA",
+			Name:   "waldur-user-data",
+			Usage:  "User data, possibly script to be executed on instance creation",
 		},
 	}
 }
@@ -126,7 +127,7 @@ func (d *Driver) SetConfigFromFlags(flags drivers.DriverOptions) error {
 	d.DataVolumeTypeUuid = flags.String("waldur-data-volume-type-uuid")
 	d.SecurityGroupUuid = flags.String("waldur-sec-group-uuid")
 	d.SubnetUuids = flags.StringSlice("waldur-subnet-uuids")
-	d.ResourceUuid = flags.String("waldur-resource-uuid")
+	d.UserData = flags.String("waldur-user-data")
 
 	// Validation
 	if d.ApiUrl == "" {
@@ -163,6 +164,9 @@ func (d *Driver) SetConfigFromFlags(flags drivers.DriverOptions) error {
 	}
 	if d.SubnetUuids == nil {
 		d.SubnetUuids = []string{}
+	}
+	if d.UserData == "" {
+		log.Warn("No user data provided")
 	}
 
 	return nil
@@ -243,6 +247,7 @@ func (d *Driver) Create() error {
 		"data_volume_type":   dataVolumeTypeUri,
 		"ports":              subnets,
 		"security_groups":    securityGroups,
+		"user_data":          d.UserData,
 		// TODO: add floating_ips
 		// "floating_ips": floating_ips,
 	}
@@ -283,6 +288,9 @@ func (d *Driver) Create() error {
 	}
 
 	log.Infof("Successfully created instance %s", d.GetMachineName())
+
+	d.ResourceUuid = resp.JSON201.ResourceUuid.String()
+	log.Infof("Resource UUID: %s", d.ResourceUuid)
 	return nil
 }
 

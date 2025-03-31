@@ -10,3 +10,7 @@ repos:
     rev: v1.64.8
     hooks:
       - id: golangci-lint-full
+  - repo: https://github.com/bhundven/golang-pre-commit.git
+    rev: v1.1.3
+    hooks:
+      - id: go-fmt
