@@ -4,19 +4,24 @@ import (
 	"context"
 	"errors"
 	"fmt"
-
 	"net/http"
+	"os"
+	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/rancher/machine/libmachine/drivers"
 	"github.com/rancher/machine/libmachine/log"
 	"github.com/rancher/machine/libmachine/mcnflag"
+	"github.com/rancher/machine/libmachine/ssh"
 	"github.com/rancher/machine/libmachine/state"
 	waldurclient "github.com/waldur/go-client"
 )
 
 const (
-	driverName = "waldur"
+	driverName           = "waldur"
+	creationPollInterval = 10 * time.Second
+	creationPollTimeout  = 20 * time.Minute
 )
 
 type Driver struct {
@@ -219,6 +224,14 @@ func (d *Driver) getWaldurResource(client waldurclient.ClientWithResponses) (*wa
 func (d *Driver) Create() error {
 	log.Infof("Creating instance for %s...", d.GetMachineName())
 
+	if err := ssh.GenerateSSHKey(d.GetSSHKeyPath()); err != nil {
+		return fmt.Errorf("failed to generate SSH key: %w", err)
+	}
+	publicKey, err := os.ReadFile(d.GetSSHKeyPath() + ".pub")
+	if err != nil {
+		return fmt.Errorf("failed to read SSH public key: %w", err)
+	}
+
 	projectUri := fmt.Sprintf("%s/api/projects/%s/", d.ApiUrl, d.ProjectUuid)
 	offeringUri := fmt.Sprintf("%s/api/marketplace-public-offerings/%s/", d.ApiUrl, d.OfferingUuid)
 	flavorUri := fmt.Sprintf("%s/api/openstack-flavors/%s/", d.ApiUrl, d.FlavorUuid)
@@ -240,6 +253,7 @@ func (d *Driver) Create() error {
 	}
 
 	systemVolumeSizeMB := d.SystemVolumeSize * 1024
+	userData := d.buildUserData(publicKey)
 
 	osInstanceOrderAttributes := waldurclient.OpenStackInstanceCreateOrderAttributes{
 		Name:             d.GetMachineName(),
@@ -250,11 +264,11 @@ func (d *Driver) Create() error {
 		DataVolumeType:   &dataVolumeTypeUri,
 		Ports:            &subnets,
 		SecurityGroups:   &securityGroups,
-		UserData:         &d.UserData,
+		UserData:         &userData,
 	}
 
 	attributes := waldurclient.OrderCreateRequest_Attributes{}
-	err := attributes.FromOpenStackInstanceCreateOrderAttributes(osInstanceOrderAttributes)
+	err = attributes.FromOpenStackInstanceCreateOrderAttributes(osInstanceOrderAttributes)
 
 	if err != nil {
 		log.Errorf("Error creating order attributes %s", err)
@@ -296,10 +310,99 @@ func (d *Driver) Create() error {
 		return errors.New(msg)
 	}
 
-	log.Infof("Successfully created instance %s", d.GetMachineName())
+	log.Infof("Successfully submitted order for instance %s", d.GetMachineName())
 
 	d.ResourceUuid = resp.JSON201.ResourceUuid.String()
 	log.Infof("Resource UUID: %s", d.ResourceUuid)
+
+	if err := d.waitForActive(client); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// buildUserData constructs the cloud-init user_data payload, always including
+// the SSH public key so rancher-machine can connect after provisioning.
+func (d *Driver) buildUserData(publicKey []byte) string {
+	sshCloudInit := ""
+	if len(publicKey) > 0 {
+		sshCloudInit = fmt.Sprintf(
+			"#cloud-config\nusers:\n  - name: %s\n    sudo: ALL=(ALL) NOPASSWD:ALL\n    ssh_authorized_keys:\n      - %s\n",
+			d.GetSSHUsername(),
+			strings.TrimSpace(string(publicKey)),
+		)
+	}
+
+	switch {
+	case sshCloudInit == "":
+		return d.UserData
+	case d.UserData == "":
+		return sshCloudInit
+	default:
+		// Combine as cloud-init multi-document; cloud-init merges both configs on boot.
+		return sshCloudInit + "---\n" + d.UserData
+	}
+}
+
+// waitForActive polls the Waldur API until the provisioned VM reaches ACTIVE state,
+// then extracts its IP address into d.IPAddress.
+func (d *Driver) waitForActive(client *waldurclient.ClientWithResponses) error {
+	deadline := time.Now().Add(creationPollTimeout)
+	for {
+		if time.Now().After(deadline) {
+			return fmt.Errorf("timed out waiting for instance %s to become active after %v", d.GetMachineName(), creationPollTimeout)
+		}
+
+		resource, err := d.getWaldurResource(*client)
+		if err != nil {
+			return err
+		}
+
+		if resource.State != nil && *resource.State == waldurclient.ResourceStateErred {
+			errMsg := ""
+			if resource.ErrorMessage != nil {
+				errMsg = *resource.ErrorMessage
+			}
+			return fmt.Errorf("instance %s entered error state: %s", d.GetMachineName(), errMsg)
+		}
+
+		if resource.BackendMetadata != nil &&
+			resource.BackendMetadata.RuntimeState != nil &&
+			*resource.BackendMetadata.RuntimeState == "ACTIVE" {
+			break
+		}
+
+		runtimeState := "unknown"
+		if resource.BackendMetadata != nil && resource.BackendMetadata.RuntimeState != nil {
+			runtimeState = *resource.BackendMetadata.RuntimeState
+		}
+		log.Infof("Instance %s runtime state: %s — waiting...", d.GetMachineName(), runtimeState)
+		time.Sleep(creationPollInterval)
+	}
+
+	resourceUUID, err := uuid.Parse(d.ResourceUuid)
+	if err != nil {
+		return fmt.Errorf("failed to parse resource UUID: %w", err)
+	}
+
+	ctx := context.Background()
+	instanceResp, err := client.OpenstackInstancesRetrieveWithResponse(ctx, resourceUUID, &waldurclient.OpenstackInstancesRetrieveParams{})
+	if err != nil {
+		return fmt.Errorf("failed to retrieve instance details: %w", err)
+	}
+	if instanceResp.StatusCode() != 200 {
+		return fmt.Errorf("failed to retrieve instance details for %s, code %d", d.GetMachineName(), instanceResp.StatusCode())
+	}
+
+	instance := instanceResp.JSON200
+	if instance.InternalIps != nil && len(*instance.InternalIps) > 0 {
+		d.IPAddress = (*instance.InternalIps)[0]
+		log.Infof("Instance %s is active, IP: %s", d.GetMachineName(), d.IPAddress)
+	} else {
+		log.Warnf("Instance %s has no internal IPs", d.GetMachineName())
+	}
+
 	return nil
 }
 
@@ -310,8 +413,14 @@ func (d *Driver) PreCreateCheck() error {
 
 // GetURL returns the URL of the docker daemon on the host
 func (d *Driver) GetURL() (string, error) {
-	url := fmt.Sprintf("%s/api/marketplace-resources/%s/", d.ApiUrl, d.ResourceUuid)
-	return url, nil
+	ip, err := d.GetIP()
+	if err != nil {
+		return "", err
+	}
+	if ip == "" {
+		return "", nil
+	}
+	return fmt.Sprintf("tcp://%s:2376", ip), nil
 }
 
 // GetState returns the state of the host
@@ -475,7 +584,7 @@ func (d *Driver) Kill() error {
 		return err
 	}
 
-	var attributes interface{} = map[string]interface{}{
+	attributes := map[string]any{
 		"delete_volumes":       true,
 		"release_floating_ips": true,
 		"action":               "force_destroy",
