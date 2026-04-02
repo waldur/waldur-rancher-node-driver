@@ -225,31 +225,40 @@ func (d *Driver) Create() error {
 	imageUri := fmt.Sprintf("%s/api/openstack-images/%s/", d.ApiUrl, d.ImageUuid)
 	systemVolumeTypeUri := fmt.Sprintf("%s/api/openstack-volume-types/%s/", d.ApiUrl, d.SystemVolumeTypeUuid)
 	dataVolumeTypeUri := fmt.Sprintf("%s/api/openstack-volume-types/%s/", d.ApiUrl, d.DataVolumeTypeUuid)
-	subnets := make([]map[string]string, len(d.SubnetUuids))
+	subnets := make([]waldurclient.OpenStackCreateInstancePortRequest, len(d.SubnetUuids))
 	defaultSecGroupUri := fmt.Sprintf("%s/api/openstack-security-groups/%s/", d.ApiUrl, d.SecurityGroupUuid)
-	securityGroups := make([]map[string]string, 1)
-	securityGroups[0] = map[string]string{
-		"url": defaultSecGroupUri,
+	securityGroups := make([]waldurclient.OpenStackSecurityGroupHyperlinkRequest, 1)
+	securityGroups[0] = waldurclient.OpenStackSecurityGroupHyperlinkRequest{
+		Url: defaultSecGroupUri,
 	}
 
 	for i, subnet := range d.SubnetUuids {
 		subnetUri := fmt.Sprintf("%s/api/openstack-subnets/%s/", d.ApiUrl, subnet)
-		subnets[i] = map[string]string{
-			"subnet": subnetUri,
+		subnets[i] = waldurclient.OpenStackCreateInstancePortRequest{
+			Subnet: &subnetUri,
 		}
 	}
-	var attributes interface{} = map[string]interface{}{
-		"name":               d.GetMachineName(),
-		"flavor":             flavorUri,
-		"image":              imageUri,
-		"system_volume_size": d.SystemVolumeSize * 1024,
-		"system_volume_type": systemVolumeTypeUri,
-		"data_volume_type":   dataVolumeTypeUri,
-		"ports":              subnets,
-		"security_groups":    securityGroups,
-		"user_data":          d.UserData,
-		// TODO: add floating_ips
-		// "floating_ips": floating_ips,
+
+	systemVolumeSizeMB := d.SystemVolumeSize * 1024
+
+	osInstanceOrderAttributes := waldurclient.OpenStackInstanceCreateOrderAttributes{
+		Name:             d.GetMachineName(),
+		Flavor:           &flavorUri,
+		Image:            &imageUri,
+		SystemVolumeSize: &systemVolumeSizeMB,
+		SystemVolumeType: &systemVolumeTypeUri,
+		DataVolumeType:   &dataVolumeTypeUri,
+		Ports:            &subnets,
+		SecurityGroups:   &securityGroups,
+		UserData:         &d.UserData,
+	}
+
+	attributes := waldurclient.OrderCreateRequest_Attributes{}
+	err := attributes.FromOpenStackInstanceCreateOrderAttributes(osInstanceOrderAttributes)
+
+	if err != nil {
+		log.Errorf("Error creating order attributes %s", err)
+		return err
 	}
 
 	acceptingTermsOfService := true
@@ -261,7 +270,7 @@ func (d *Driver) Create() error {
 		log.Errorf("Error creating Waldur client %s", err)
 		return err
 	}
-	requestType := waldurclient.RequestTypesCreate
+	requestType := waldurclient.Create
 
 	payload := waldurclient.MarketplaceOrdersCreateJSONRequestBody{
 		AcceptingTermsOfService: &acceptingTermsOfService,
